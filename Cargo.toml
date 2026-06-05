@@ -1,0 +1,6 @@
+[package]
+name = "ternary-needledrop"
+version = "0.1.0"
+edition = "2021"
+description = "Needle drop / entry point dynamics — where you start changes everything, initial condition sensitivity"
+license = "MIT"
