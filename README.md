@@ -1,76 +1,121 @@
-# ternary-needledrop
+# Ternary Needledrop
 
-**The sound of vinyl that never existed. Surface noise, crackle, warmth, and the romance of imperfection.**
+Initial-condition sensitivity analysis for ternary `{-1, 0, +1}` agent systems. The "needle drop" metaphor: **where you place the needle on the record changes the entire song**. A single perturbed agent can cascade into system-wide divergence — this crate measures exactly how much, how fast, and which starting positions are safe.
 
-There's a reason producers still record to tape and press to vinyl when they could stay digital. It's not nostalgia — it's *physics*. A needle dragging through a groove creates sounds that digital processing can't replicate: the warm rumble of the turntable motor, the soft crackle of dust in the groove, the gentle wow and flutter of a platter that doesn't spin at exactly 33⅓ RPM.
+## Why It Matters
 
-These imperfections aren't bugs. They're features. The noise floor gives the music a bed to lie on. The crackle marks time between tracks. The warmth — that vague, unmeasurable "warmth" — is the sound of a physical system with resonances and inertia and mass.
+Ternary systems — cellular automata, GPU scheduling clusters, game-theoretic populations — exhibit extreme sensitivity to initial conditions. A one-bit flip at agent $i$ can, under chaotic dynamics, grow to infect the entire population within $O(\log n)$ steps. Conversely, some configurations are **equilibrium points** — no matter how long you run the system, they never change.
 
-This crate simulates all of that in ternary. The signal goes in clean. It comes out with character.
+Understanding this dichotomy is essential for:
 
-## What's Inside
+- **Fault tolerance**: How resilient is a fleet configuration to a single-agent crash?
+- **Chaos detection**: Is the system governed by deterministic chaos (bounded but unpredictable) or true instability?
+- **Bootstrapping**: Which initial states lead to stable equilibria vs. oscillations vs. chaos?
 
-- **`crackle(signal, density, seed)`** — add random pops and crackles. Density controls how often, seed makes it reproducible
-- **`surface_noise(signal, level)`** — add a bed of low-level noise. The "room tone" of vinyl
-- **`wow_and_flutter(signal, rate, depth)`** — pitch wobble from an imperfect motor. Rate = how fast it wobbles, depth = how much
-- **`vinyl_process(signal, config)`** — the full chain: crackle + surface noise + wow + EQ curve. One function, full character
-- **`VinylConfig`** — configurable: crackle density, noise level, wow rate, flutter depth, wear level
-- **`wear(signal, plays)`** — simulate repeated playback. More plays = more high-frequency loss + more crackle. The record *degrades*
+## How It Works
 
-## Quick Example
+### Perturbation Divergence
+
+Given an initial state $s \in \{-1, 0, +1\}^n$ and a perturbation at index $k$ (where $s_k \to -s_k$), we evolve both the original and perturbed states under a rule $f$ and measure the **Hamming divergence** at each step:
+
+$$D(t) = \frac{1}{n} \sum_{i=0}^{n-1} \mathbf{1}\left[f^t(s)_i \neq f^t(s')_i\right]$$
+
+$D(t) \in [0, 1]$: 0 means identical, 1 means fully diverged.
+
+**Complexity:** $O(n \cdot T)$ for $T$ ticks of evolution (each tick applies $f$ which is $O(n)$ for majority rule).
+
+### Lyapunov Exponent Estimation
+
+The **maximal Lyapunov exponent** $\lambda$ quantifies the rate of divergence:
+
+$$D(t) \approx D(0) \cdot e^{\lambda t}$$
+
+Taking logs: $\lambda \approx \frac{1}{T \cdot \Delta t} \sum_{t=1}^{T-1} \ln\left(\frac{D(t)}{D(t-1)}\right)$
+
+| $\lambda$ | Interpretation |
+|---|---|
+| $\lambda > 0$ | Chaotic — perturbations grow exponentially |
+| $\lambda \approx 0$ | Marginal — perturbations stay constant |
+| $\lambda < 0$ | Stable — perturbations decay |
+
+### Entry-Point Sensitivity
+
+For a set of candidate entry configurations $\{e_1, e_2, \ldots, e_m\}$, we evolve each for $T$ ticks and record the population mean $\mu_t = \frac{1}{n}\sum_i s_i^{(t)}$ at each step. Trajectories that diverge indicate high entry-point sensitivity.
+
+### Butterfly Score
+
+The **worst-case single-bit-flip divergence**:
+
+$$B = \max_{k \in [0,n)} \left( \max_{t \in [0,T)} D_k(t) \right)$$
+
+Returns both the critical index $k^*$ and the worst divergence $B$.
+
+### Equilibrium Points
+
+Uses a linear-congruential PRNG (constants from Knuth: $a = 6364136223846793005$, $c = 1$) to sample $K$ candidate initial states. Each is evolved for $T$ ticks; if the state returns to itself, it's a **fixed point** of $f$.
+
+**Probability bound:** For majority rule on a $\sqrt{n} \times \sqrt{n}$ torus, the number of fixed points scales as $O(2^{n/2})$, so random sampling finds them with probability $\sim K / 3^n$.
+
+## Quick Start
 
 ```rust
-use ternary_needledrop::*;
-
-let clean = vec![1, 0, -1, 0, 1, 0, -1, 0, 1, 0, -1, 0];
-
-// Add some crackle
-let crackling = crackle(&clean, 0.1, 42);
-// ~10% of samples get a random crackle pop
-
-// Full vinyl treatment
-let config = VinylConfig {
-    crackle_density: 0.05,
-    noise_level: 0.15,
-    wow_rate: 0.3,
-    wow_depth: 0.02,
-    wear: 50, // 50 previous plays
+use ternary_needledrop::{
+    perturbation_divergence, lyapunov_exponent,
+    butterfly_score, find_equilibrium_points,
+    majority_rule,
 };
-let vinyl = vinyl_process(&clean, &config);
 
-// Simulate aging: play it 100 more times
-let worn = wear(&vinyl, 100);
-// More noise, less detail. The record is dying beautifully.
+let state = vec![1, 0, -1, 1, 0, -1, 1, 0, -1];
+
+// Perturb agent 0 and watch divergence for 10 ticks
+let divs = perturbation_divergence(&state, 0, 10, majority_rule);
+println!("Divergence trajectory: {:?}", divs);
+
+// Estimate Lyapunov exponent
+let lambda = lyapunov_exponent(&divs, 1.0);
+println!("Lyapunov λ = {:.4}", lambda);
+
+// Find the most fragile position
+let (worst_idx, worst_div) = butterfly_score(&state, 10, majority_rule);
+println!("Butterfly at index {} → max divergence {:.2}", worst_idx, worst_div);
+
+// Search for equilibrium points
+let stable = find_equilibrium_points(9, 200, 5, majority_rule);
+println!("Found {} equilibrium configurations", stable.len());
 ```
 
-## The Deeper Truth
+## API
 
-**Imperfection is information.** A perfectly clean digital signal tells you exactly what was recorded and nothing else. A vinyl signal tells you what was recorded *plus* the temperature of the room where it was pressed, the dust in the air, how many times it's been played, and whether the turntable belt is getting old. The imperfections are a *timestamp* — evidence that something physical happened.
+### Core Functions
 
-In ternary, this is particularly meaningful because ternary is already a low-information representation. Adding noise doesn't "obscure" the signal — it *enriches* it. A ternary signal with crackle has more information than a clean ternary signal, because each crackle pop is a data point about the (simulated) physical medium. The noise becomes signal.
+| Function | Signature | Complexity |
+|---|---|---|
+| `perturbation_divergence` | `(state, idx, ticks, rule) → Vec<f64>` | $O(n \cdot T)$ |
+| `lyapunov_exponent` | `(divergences, dt) → f64` | $O(T)$ |
+| `entry_point_sensitivity` | `(size, entries, ticks, rule) → Vec<Vec<f64>>` | $O(m \cdot n \cdot T)$ |
+| `butterfly_score` | `(state, ticks, rule) → (usize, f64)` | $O(n^2 \cdot T)$ |
+| `find_equilibrium_points` | `(size, candidates, ticks, rule) → Vec<Vec<i8>>` | $O(K \cdot n \cdot T)$ |
 
-The wear function is the most poignant: every play degrades the record slightly. High frequencies go first. Then the crackle increases. After enough plays, the music is barely recognizable beneath the noise — but the *rhythm* persists longer than anything else. The groove is the last thing to die.
+### `majority_rule`
 
-**Use cases:**
-- **Lo-fi production** — the authentic vinyl aesthetic, generated in code
-- **Sound design** — age and degrade any ternary signal
-- **Art installation** — generative music that physically degrades over time
-- **Nostalgia engineering** — make digital sounds feel analog
-- **Education** — hear what "warmth" and "character" actually mean in signal processing terms
+Built-in cellular automaton update rule on a $\sqrt{n} \times \sqrt{n}$ toroidal grid. Each cell takes the sign of the sum of its 8 neighbors (von Neumann + diagonal). Used as the default dynamics for testing.
 
-## See Also
+## Architecture Notes
 
-- **ternary-bite** — a different kind of degradation (digital, not analog)
-- **ternary-echo** — echo + needledrop = dub vinyl
-- **ternary-wave** — the clean signals you're aging
-- **ternary-sampler** — sample from vinyl, then mangle
-- **ternary-grain** — granular synthesis loves the texture of noise
+Ternary Needledrop connects to the **γ + η = C** framework as the **sensitivity analyzer**:
 
-## Install
+- **γ (gamma)** — the perturbation itself: flipping one agent's ternary state
+- **η (eta)** — the system's nonlinear response: how the perturbation propagates through the neighbor graph
+- **C** — **criticality**: when λ > 0, the system is at the edge of chaos — the most computationally rich regime (per Langton's edge-of-chaos hypothesis)
 
-```bash
-cargo add ternary-needledrop
-```
+The crate is `#![forbid(unsafe_code)]` — pure safe Rust with zero dependencies.
+
+## References
+
+1. Lyapunov, A. M. (1892). *The General Problem of the Stability of Motion*. — Original definition of characteristic exponents.
+2. Packard, N. H., Crutchfield, J. P., Farmer, J. D., & Shaw, R. S. (1980). "Geometry from a Time Series." *Physical Review Letters*, 45(9), 712. — Practical Lyapunov estimation from time series.
+3. Langton, C. G. (1990). "Computation at the Edge of Chaos." *Physica D*, 42(1-3), 12-37. — Edge of chaos and λ ≈ 0.
+4. Wolfram, S. (1984). "Universality and Complexity in Cellular Automata." *Physica D*, 10(1-2), 1-35. — Classification of CA dynamics.
 
 ## License
 
